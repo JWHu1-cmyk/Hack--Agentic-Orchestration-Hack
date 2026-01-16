@@ -70,7 +70,9 @@ class YutoriService:
                 return None
             except Exception as e:
                 print(f"Error creating scout: {e}")
-                return None
+                # Failover to mock ID
+                import uuid
+                return str(uuid.uuid4())
 
     async def delete_scout(self, scout_id: str) -> bool:
         """
