@@ -15,7 +15,7 @@ class YutoriService:
 
     def _get_headers(self) -> dict:
         return {
-            "Authorization": f"Bearer {self.api_key}",
+            "X-API-Key": self.api_key,
             "Content-Type": "application/json"
         }
 
@@ -36,35 +36,24 @@ class YutoriService:
         Returns:
             Scout ID if successful, None otherwise
         """
+        # Yutori Scouts API uses query-based approach
         payload = {
-            "name": name,
-            "url": url,
+            "query": f"Monitor this product page for price changes, stock updates, and availability. Product: {name}. Report any changes to price, stock status, or availability.",
+            "start_url": url,
             "webhook_url": f"{self.webhook_base_url}/webhooks/yutori",
-            "schedule": schedule,
-            "notify_on": ["price_change", "stock_change", "content_change"],
-            "selectors": {
-                "price": [
-                    ".a-price-whole",  # Amazon
-                    ".priceView-customer-price span",  # Best Buy
-                    "[data-price]"
-                ],
-                "stock": [
-                    "#availability",  # Amazon
-                    ".fulfillment-add-to-cart-button"  # Best Buy
-                ]
-            }
+            "schedule": schedule
         }
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             try:
                 response = await client.post(
-                    f"{self.base_url}/scouts",
+                    f"{self.base_url}/scouting/tasks",
                     headers=self._get_headers(),
                     json=payload
                 )
                 response.raise_for_status()
                 data = response.json()
-                return data.get("id") or data.get("scout_id")
+                return data.get("id") or data.get("scout_id") or data.get("task_id")
             except httpx.HTTPStatusError as e:
                 print(f"Yutori API error: {e.response.status_code} - {e.response.text}")
                 return None
@@ -87,7 +76,7 @@ class YutoriService:
         async with httpx.AsyncClient(timeout=30.0) as client:
             try:
                 response = await client.delete(
-                    f"{self.base_url}/scouts/{scout_id}",
+                    f"{self.base_url}/scouting/tasks/{scout_id}",
                     headers=self._get_headers()
                 )
                 response.raise_for_status()
@@ -109,7 +98,7 @@ class YutoriService:
         async with httpx.AsyncClient(timeout=30.0) as client:
             try:
                 response = await client.get(
-                    f"{self.base_url}/scouts/{scout_id}",
+                    f"{self.base_url}/scouting/tasks/{scout_id}",
                     headers=self._get_headers()
                 )
                 response.raise_for_status()
@@ -117,6 +106,29 @@ class YutoriService:
             except Exception as e:
                 print(f"Error getting scout status: {e}")
                 return None
+
+    async def get_scout_updates(self, scout_id: str) -> list[dict]:
+        """
+        Get updates from a Yutori Scout.
+
+        Args:
+            scout_id: ID of the scout
+
+        Returns:
+            List of update objects
+        """
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                response = await client.get(
+                    f"{self.base_url}/scouting/tasks/{scout_id}/updates",
+                    headers=self._get_headers()
+                )
+                response.raise_for_status()
+                data = response.json()
+                return data.get("updates", []) if isinstance(data, dict) else data
+            except Exception as e:
+                print(f"Error getting scout updates: {e}")
+                return []
 
     async def list_scouts(self) -> list[dict]:
         """
@@ -128,7 +140,7 @@ class YutoriService:
         async with httpx.AsyncClient(timeout=30.0) as client:
             try:
                 response = await client.get(
-                    f"{self.base_url}/scouts",
+                    f"{self.base_url}/scouting/tasks",
                     headers=self._get_headers()
                 )
                 response.raise_for_status()
@@ -151,7 +163,7 @@ class YutoriService:
         async with httpx.AsyncClient(timeout=30.0) as client:
             try:
                 response = await client.post(
-                    f"{self.base_url}/scouts/{scout_id}/trigger",
+                    f"{self.base_url}/scouting/tasks/{scout_id}/trigger",
                     headers=self._get_headers()
                 )
                 response.raise_for_status()

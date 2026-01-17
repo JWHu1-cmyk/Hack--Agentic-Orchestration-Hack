@@ -3,13 +3,13 @@ from functools import lru_cache
 
 
 class Settings(BaseSettings):
-    # TinyFish API
+    # TinyFish (Mino) API
     tinyfish_api_key: str = ""
-    tinyfish_base_url: str = "https://api.tinyfish.io"
+    tinyfish_base_url: str = "https://mino.ai/v1"
 
     # Yutori API
     yutori_api_key: str = ""
-    yutori_base_url: str = "https://api.yutori.ai"
+    yutori_base_url: str = "https://api.yutori.com/v1"
 
     # Backend config
     webhook_base_url: str = "http://localhost:8000"

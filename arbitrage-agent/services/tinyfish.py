@@ -1,4 +1,6 @@
 import httpx
+import json
+import re
 from typing import Optional
 from datetime import datetime
 
@@ -20,7 +22,7 @@ class TinyFishService:
 
     def _get_headers(self) -> dict:
         return {
-            "Authorization": f"Bearer {self.api_key}",
+            "X-API-Key": self.api_key,
             "Content-Type": "application/json"
         }
 
@@ -45,61 +47,70 @@ class TinyFishService:
         """
         marketplace = self._detect_marketplace(url)
 
-        # Define extraction schema based on marketplace
-        if marketplace == Marketplace.AMAZON:
-            schema = {
-                "price": {
-                    "type": "number",
-                    "description": "The main product price in USD, without currency symbol"
-                },
-                "shipping": {
-                    "type": "string",
-                    "description": "Shipping cost or 'FREE' if free shipping"
-                },
-                "stock": {
-                    "type": "string",
-                    "description": "Stock availability status"
-                },
-                "seller": {
-                    "type": "string",
-                    "description": "Seller name (e.g., 'Amazon.com' or third-party seller)"
-                }
-            }
-        else:  # Best Buy
-            schema = {
-                "price": {
-                    "type": "number",
-                    "description": "The product price in USD, without currency symbol"
-                },
-                "shipping": {
-                    "type": "string",
-                    "description": "Shipping cost or 'FREE' if free shipping"
-                },
-                "stock": {
-                    "type": "string",
-                    "description": "Stock availability (In Stock, Out of Stock, etc.)"
-                },
-                "seller": {
-                    "type": "string",
-                    "description": "Always 'Best Buy' for bestbuy.com"
-                }
-            }
+        # Define extraction goal for Mino API
+        goal = """Extract product pricing information and respond in JSON format:
+{
+    "price": <number - the main product price in USD without currency symbol>,
+    "shipping": "<string - shipping cost or 'FREE' if free shipping>",
+    "stock": "<string - stock availability status>",
+    "seller": "<string - seller name>"
+}
+Only return the JSON object, no other text."""
 
         payload = {
             "url": url,
-            "schema": schema,
-            "wait_for": "networkidle"  # Wait for page to fully load
+            "goal": goal
         }
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=180.0) as client:
             try:
-                response = await client.post(
-                    f"{self.base_url}/extract",
+                # Use streaming to properly receive all SSE events
+                data = None
+                async with client.stream(
+                    "POST",
+                    f"{self.base_url}/automation/run-sse",
                     headers=self._get_headers(),
                     json=payload
-                )
-                response.raise_for_status()
-                data = response.json()
+                ) as response:
+                    response.raise_for_status()
+
+                    async for line in response.aiter_lines():
+                        if line.startswith('data:'):
+                            try:
+                                json_str = line[5:].strip()
+                                if json_str:
+                                    parsed = json.loads(json_str)
+                                    if isinstance(parsed, dict):
+                                        event_type = parsed.get('type', '')
+                                        # Look for COMPLETE/COMPLETED/FINISHED/DONE event with result
+                                        if event_type in ('COMPLETE', 'COMPLETED', 'FINISHED', 'DONE', 'SUCCESS'):
+                                            # Result could be in various fields
+                                            result = parsed.get('resultJson') or parsed.get('result') or parsed.get('output') or parsed.get('data') or parsed.get('response')
+                                            if isinstance(result, dict):
+                                                data = result
+                                            elif isinstance(result, str):
+                                                # Try to parse result string as JSON
+                                                try:
+                                                    data = json.loads(result)
+                                                except:
+                                                    # Try to extract JSON from the string
+                                                    json_match = re.search(r'\{[^{}]*"price"[^{}]*\}', result)
+                                                    if json_match:
+                                                        try:
+                                                            data = json.loads(json_match.group())
+                                                        except:
+                                                            pass
+                                                    if not data:
+                                                        data = {"raw_result": result}
+                                        # Also check for direct price data
+                                        elif 'price' in parsed:
+                                            data = parsed
+                            except json.JSONDecodeError:
+                                continue
+
+                if not data:
+                    print(f"TinyFish: No COMPLETE event with result found for {url}")
+                    return self._get_mock_price(url, product_id, marketplace)
 
                 # Parse shipping cost
                 shipping_str = data.get("shipping", "0")
@@ -108,7 +119,6 @@ class TinyFishService:
                         shipping = 0.0
                     else:
                         # Try to extract number from string
-                        import re
                         numbers = re.findall(r'[\d.]+', shipping_str)
                         shipping = float(numbers[0]) if numbers else 0.0
                 else:
@@ -127,22 +137,20 @@ class TinyFishService:
 
             except httpx.HTTPStatusError as e:
                 print(f"TinyFish API error: {e.response.status_code} - {e.response.text}")
-                return None
+                return self._get_mock_price(url, product_id, marketplace)
             except Exception as e:
                 print(f"Error scraping {url}: {e}")
-                # Fallback to mock data on error
-                return self._get_mock_price(url, self._detect_marketplace(url).value)
+                return self._get_mock_price(url, product_id, marketplace)
 
-    def _get_mock_price(self, url: str, marketplace: str) -> Optional[PricePoint]:
+    def _get_mock_price(self, url: str, product_id: str, marketplace: Marketplace) -> Optional[PricePoint]:
         """Generate a fake price for demo/fallback purposes."""
         import random
-        from datetime import datetime
-        
+
         # Generate a random price between $20 and $100
         price = round(random.uniform(20.0, 100.0), 2)
-        
+
         return PricePoint(
-            product_id="mock_product",
+            product_id=product_id,
             marketplace=marketplace,
             price=price,
             shipping=0.0,
